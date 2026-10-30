@@ -14,6 +14,37 @@ import (
 	"devshard/observability"
 )
 
+// tokenForcingFields are the request fields that make the engine pick or avoid named tokens. An
+// answer generated under them can take more tokens than a render of its text counts, which the
+// usage check would take for an inflated claim. The gateway rejects them; the executor, its
+// validators and the challenge voters drop them as well, because the gateway that signed the
+// prompt is not trusted to have done so.
+var tokenForcingFields = []string{"logit_bias", "bad_words"}
+
+// withoutTokenForcing returns the prompt without tokenForcingFields. A prompt that has none of
+// them, or is not a JSON object, is returned as it is.
+func withoutTokenForcing(prompt []byte) []byte {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(prompt, &fields); err != nil {
+		return prompt
+	}
+	found := false
+	for _, name := range tokenForcingFields {
+		if _, ok := fields[name]; ok {
+			delete(fields, name)
+			found = true
+		}
+	}
+	if !found {
+		return prompt
+	}
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return prompt
+	}
+	return stripped
+}
+
 type mlRequestExecutor func(ctx context.Context, model string, body []byte) (*http.Response, error)
 
 type processedExecutionResponse struct {
@@ -37,7 +68,7 @@ func executeInference(
 	seed := int32(req.InferenceID)
 	inferenceID := fmt.Sprintf("devshard-%s-%d", req.EscrowID, req.InferenceID)
 
-	modified, err := completionapi.ModifyRequestBodyWithLogprobsMode(req.Prompt, seed, chainParams.LogprobsMode())
+	modified, err := completionapi.ModifyRequestBodyWithLogprobsMode(withoutTokenForcing(req.Prompt), seed, chainParams.LogprobsMode())
 	if err != nil {
 		return nil, observability.Classify(observability.ReasonModifyRequestErr, observability.WhereRuntimeExecute, fmt.Errorf("modify request body: %w", err))
 	}
